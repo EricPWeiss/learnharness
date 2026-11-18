@@ -799,6 +799,20 @@ export class GraphCanvasRenderer {
 		this.markDirty();
 	}
 
+	/** Live preview of cluster membership without replacing graph nodes or camera. */
+	setClusters(clusters: CanvasCluster[]): void {
+		if (!this.data) return;
+		this.data.clusters = clusters;
+		this.regionBuiltVersion = -2;
+		this.buildSim();
+		if (this.sim && this.physicsTuning.clusterPull > 0) {
+			this.sim.alpha(1);
+			this.simActive = true;
+		}
+		this.geoVersion++;
+		this.markDirty();
+	}
+
 	setSettings(settings: GraphRenderSettings): void {
 		this.settings = settings;
 		this.geoVersion++; // sizes/wrap width changed → rebuild geometry

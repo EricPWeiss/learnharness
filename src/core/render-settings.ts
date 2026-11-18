@@ -32,6 +32,8 @@
  * fine-grained log sliders (user: "very fine tunable... good as they are").
  */
 
+import { DEFAULT_CLUSTER_SETTINGS, sanitizeInteractiveClusterSettings, type InteractiveClusterSettings } from "./interactive-clusters.ts";
+
 import {
 	CHARGE_STRENGTH,
 	CLUSTER_PULL_STRENGTH,
@@ -66,6 +68,7 @@ export interface GraphRenderSettings {
 	/** Live-sim physics + inference-depth anchoring. Server-persisted
 	 *  since 2026-09-13 (user request) — was session-only dev state. */
 	physics: PhysicsTuning;
+	clustering: InteractiveClusterSettings;
 }
 
 
@@ -109,6 +112,7 @@ export function sanitizeRenderSettings(raw: unknown): GraphRenderSettings {
 			? { ...sanitizeRegionTuning(r.regions), dilation: DEFAULT_REGION_TUNING.dilation }
 			: sanitizeRegionTuning(r.regions),
 		physics: sanitizePhysicsTuning(r.physics),
+		clustering: sanitizeInteractiveClusterSettings(r.clustering),
 	};
 }
 
@@ -270,6 +274,7 @@ export const DEFAULT_RENDER_SETTINGS: GraphRenderSettings = {
 	clusterLabelSize: 14,
 	regions: DEFAULT_REGION_TUNING,
 	physics: DEFAULT_PHYSICS_TUNING,
+	clustering: DEFAULT_CLUSTER_SETTINGS,
 };
 
 // ─── The slider ladders (2026-09-17) ─────────────────────────────────────────

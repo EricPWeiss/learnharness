@@ -72,6 +72,7 @@ import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, Wayp
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { CLUSTER_LIGHTNESS, GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
+import { computeInteractiveClusters } from "@/src/core/interactive-clusters.ts";
 import { useAppearance } from "@/components/settings/appearance";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
@@ -416,11 +417,17 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 function GraphSettingsControl({
 	settings,
 	changeSettings,
+	clusters,
+	onRenameCluster,
 }: {
 	settings: GraphRenderSettings;
 	changeSettings: (update: (cur: RenderSettings) => RenderSettings) => void;
+	clusters: GraphSnapshot["clusters"];
+	onRenameCluster: (id: string, label: string, members: string[]) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [chosenCluster, setChosenCluster] = useState("");
+	const currentCluster = clusters.find(c => c.id === chosenCluster) ?? clusters[0];
 	// Click anywhere outside (or Escape) closes the panel (2026-09-17) —
 	// the root wraps button + panel, so the toggle itself keeps working.
 	const rootRef = useRef<HTMLDivElement>(null);
@@ -460,7 +467,41 @@ function GraphSettingsControl({
 				// distance from the panel's right border.
 				<div ref={panelRef} style={{ zIndex: INTERACTION_LAYER_Z_BASE + popupLayer.order }} className="absolute right-0 top-full mt-2 flex max-h-[60vh] w-72 flex-col rounded-xl border bg-card/85 p-2.5 shadow-lg backdrop-blur">
 					<div className="flex flex-col gap-2 overflow-y-auto pr-2.5">
-							{/* Size/zoom/region sliders: LADDER-mapped 0-100, step 10 (11
+						<div className="mb-2 flex flex-col gap-2 border-b pb-3">
+							<span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Interactive clustering</span>
+							<select aria-label="Clustering mode" className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
+								value={settings.clustering.mode}
+								onChange={e => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: e.target.value as GraphRenderSettings["clustering"]["mode"] } }))}>
+								<option value="source">Source (original PDFs)</option>
+								<option value="logical">Logical (reasoning chains)</option>
+								<option value="hybrid">Hybrid (weighted)</option>
+							</select>
+							<SettingSlider label="Logical weight" min={0} max={100} step={5}
+								value={settings.clustering.logicalWeight} display={settings.clustering.logicalWeight + "%"}
+								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, logicalWeight: p } }))} />
+							<SettingSlider label="Clustering granularity" min={0} max={100} step={5}
+								value={settings.clustering.granularity} display={settings.clustering.granularity + "%"}
+								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, granularity: p } }))} />
+							<SettingSlider label="Bridge influence" min={0} max={100} step={5}
+								value={settings.clustering.bridgeInfluence} display={settings.clustering.bridgeInfluence + "%"}
+								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, bridgeInfluence: p } }))} />
+							<p className="text-[10px] text-muted-foreground">{clusters.length} visible communities. Bridge weight currently uses cross-source chains as a proxy.</p>
+							<button type="button" className="self-start rounded border px-2 py-1 text-[11px] hover:bg-accent"
+								onClick={() => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: "hybrid", logicalWeight: 50, granularity: 50, bridgeInfluence: 60 } }))}>
+								Reset clustering
+							</button>
+							<span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Rename a community</span>
+							<select aria-label="Choose community" value={currentCluster?.id ?? ""}
+								onChange={e => setChosenCluster(e.target.value)} className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs">
+								{clusters.map(c => <option key={c.id} value={c.id}>{c.label ?? c.id} ({c.members.filter(id => id.startsWith("n_")).length})</option>)}
+							</select>
+							{currentCluster && <input key={currentCluster.id + ":" + (currentCluster.label ?? "")} aria-label="Custom community name"
+								defaultValue={currentCluster.label ?? ""} placeholder="Community name" maxLength={100}
+								className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
+								onBlur={e => { const name = e.target.value.trim(); if (name && name !== currentCluster.label) onRenameCluster(currentCluster.id, name, currentCluster.members); }}
+								onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }} />}
+						</div>
+						{/* Size/zoom/region sliders: LADDER-mapped 0-100, step 10 (11
 							    stops, every DEFAULT dead-center at 50, every value a nice
 							    number — src/core/render-settings.ts). Physics keeps the
 							    fine-grained log sliders (step 5). */}
@@ -814,6 +855,8 @@ export function GraphChromeRow({
 	onImportFiles,
 	settings,
 	changeSettings,
+	clusters = [],
+	onRenameCluster = () => {},
 	onOpenChains,
 }: {
 	isEmpty: boolean;
@@ -827,6 +870,8 @@ export function GraphChromeRow({
 	onImportFiles: (files: FileList | null) => void;
 	settings: GraphRenderSettings;
 	changeSettings: (update: (cur: RenderSettings) => RenderSettings) => void;
+	clusters?: GraphSnapshot["clusters"];
+	onRenameCluster?: (id: string, label: string, members: string[]) => void;
 	/** Opens the chain table overlay (the chains-overlay plan,
 	 *  2026-09-29). */
 	onOpenChains: () => void;
@@ -884,7 +929,7 @@ export function GraphChromeRow({
 				// is a plain shrink-0 flex child — the panel itself positions
 				// within GraphSettingsControl's own relative root, unaffected.
 				<div className="graph-chrome-fade-in shrink-0">
-					<GraphSettingsControl settings={settings} changeSettings={changeSettings} />
+					<GraphSettingsControl settings={settings} changeSettings={changeSettings} clusters={clusters} onRenameCluster={onRenameCluster} />
 				</div>
 			)}
 		</>
@@ -987,6 +1032,7 @@ export function GraphView({
 	// below (same names the old session state had).
 	const regionTuning = settings.regions;
 	const physicsTuning = settings.physics;
+	const activeClusters = useMemo(() => snapshot ? computeInteractiveClusters(snapshot.propositions, snapshot.chains, snapshot.clusters, settings.clustering) : [], [snapshot, settings.clustering]);
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
 	// True once the user has moved a control this mount: the server copy
@@ -1427,6 +1473,11 @@ export function GraphView({
 		});
 	}, [snapshot, isEmpty, resolvedMode, colors]);
 
+	// Community-only update: keep the same camera and live node positions.
+	useEffect(() => {
+		if (!isEmpty) rendererRef.current?.setClusters(activeClusters.map(c => ({ id: c.id, label: c.label, members: c.members })));
+	}, [activeClusters, isEmpty]);
+
 	// Feed #2 — settings: just marks the frame dirty. No rebuild, no
 	// re-layout, no camera touch (the whole point of the new renderer).
 	const deferredSettings = useDeferredValue(settings);
@@ -1591,6 +1642,8 @@ export function GraphView({
 					onImportFiles={onImportFiles}
 					settings={settings}
 					changeSettings={changeSettings}
+					clusters={activeClusters}
+					onRenameCluster={(id, label, members) => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, names: { ...cur.clustering.names, [cur.clustering.mode + ":" + id]: { label, members: members.filter(x => x.startsWith("n_")) } } } }))}
 					onOpenChains={() => setChainsOpen(true)}
 				/>
 			</div>
