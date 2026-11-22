@@ -27,7 +27,7 @@ import type { GraphStore } from "../../core/ports.ts";
 import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
-import { chunkImportedNotes, type NotesImportJournal } from "../../core/notes-import-journal.ts";
+import { chunkImportedNotes, recoveryDecision, type NotesImportJournal } from "../../core/notes-import-journal.ts";
 import { failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
 import { prepareAuditorReview } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
@@ -1320,8 +1320,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			const settled: PromiseSettledResult<EmissionStats>[] = [];
 			for (const [chunkIndex, chunk] of chunks.entries()) {
 				const saved = record?.chunks[chunkIndex];
-				if (saved?.stage === "merged") continue;
-				if (saved?.stage === "merging") {
+				const decision = saved ? recoveryDecision(saved, Boolean(input.auditOnly)) : "resume";
+				if (decision === "skip") continue;
+				if (decision === "block") {
 					settled.push({ status: "rejected", reason: new Error(
 						"Chunk " + (chunkIndex + 1) + " has an uncertain merge outcome after interruption. Inspect the graph before deleting/reimporting this source."
 					) });
@@ -1351,8 +1352,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 							// per chunk so cross-source runs interleave fairly.
 							return withAuditLock(jobKey, "notes", input.filePath, async () => {
 								setPhase(jobKey, "auditing", "notes", input.filePath, part);
-								const auditResult = input.auditOnly || !saved?.audit
-									? await audit(jobKey, input.id, findings) : saved.audit;
+								// Saved identity verdicts may reference a now-changed graph.
+								// Check saved findings against the live graph for safe reuse.
+								const auditResult = await audit(jobKey, input.id, findings);
 								deps.notesJournal?.patchChunk(id, chunkIndex, {
 									stage: "audited", findings, audit: auditResult, error: undefined,
 								});
@@ -1448,7 +1450,17 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 					"Saved content differs. Delete this source and its graph traces before importing a changed version.");
 			}
 			const importedAt = saved?.record.importedAt ?? new Date().toISOString();
-			if (!saved) graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
+			if (!saved) {
+				// Write the original text + chunk hashes BEFORE source metadata.
+				// Missing models and transient failures must not strand a
+				// new import in the older, non-resumable source format.
+				const chunkBudget = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
+				deps.notesJournal?.begin({
+					sourceId: id, filePath: input.filePath, text: input.text,
+					chunkBudget, chunks: chunkNotes(input.text, chunkBudget), importedAt,
+				});
+				graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
+			}
 			return await runNotesExtraction({ id, ...input, importedAt });
 		} catch (err) {
 			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;
@@ -1462,6 +1474,8 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		if (!deps.notesJournal) throw new Error("Import recovery is unavailable.");
 		const saved = deps.notesJournal.load(sourceId);
 		if (!saved) throw new Error("No saved import for this source.");
+		if (!graphStore.readSources().some(source => source.id === sourceId))
+			throw new Error("This source was deleted from the graph; recovery is disabled.");
 		if (inFlight.has(sourceId)) throw new NotesImportError("busy", { nodes: 0, chains: 0 },
 			"This source is currently being imported.");
 		inFlight.add(sourceId);

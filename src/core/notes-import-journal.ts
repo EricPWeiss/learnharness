@@ -33,6 +33,16 @@ export interface NotesImportProgress {
   lastError?: string;
   updatedAt: string;
 }
+/** A source may be safely replayed only until it enters graph mutation.
+ * An interrupted merge must remain blocked for manual reconciliation. */
+export function recoveryDecision(chunk: NotesChunkCheckpoint, auditOnly: boolean):
+  "skip" | "block" | "resume" {
+  if (chunk.stage === "merged") return "skip";
+  if (chunk.stage === "merging") return "block";
+  if (auditOnly && !chunk.findings) return "skip";
+  return "resume";
+}
+
 export interface NotesImportJournal {
   begin(input: {
     sourceId: string; filePath: string; text: string; chunkBudget: number;

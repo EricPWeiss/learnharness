@@ -117,7 +117,7 @@ export function ImportRecoveryPanel({ onClose }: { onClose: () => void }) {
         <strong>Saved import progress</strong>
         <button type="button" onClick={onClose} aria-label="Close import recovery" className="rounded px-2 py-1 hover:bg-accent">Close</button>
       </div>
-      <p className="mb-2 text-muted-foreground">Resume missing chunks without uploading again. Re-audit repeats identity checking for saved findings. Completed chunks are never replayed.</p>
+      <p className="mb-2 text-muted-foreground">Resume missing chunks without uploading again. Saved findings are checked against the current graph before merging. Completed chunks are never replayed.</p>
       {error && <p role="alert" className="mb-2 text-error">{error}</p>}
       {loading && <p>Loading saved imports…</p>}
       {!loading && rows.length === 0 && <p>No saved imports yet. Older imports made before this feature cannot be resumed.</p>}
@@ -129,7 +129,7 @@ export function ImportRecoveryPanel({ onClose }: { onClose: () => void }) {
           {row.needsReview ? <p className="text-muted-foreground">Merge outcome uncertain. Inspect the graph; automatic replay is blocked.</p> :
           !row.completed && <div className="mt-1 flex gap-2">
             <button type="button" disabled={Boolean(pending)} onClick={() => void recover(row.sourceId, "resume")} className="rounded border px-2 py-1 hover:bg-accent disabled:opacity-50">Resume</button>
-            {row.extracted > 0 && <button type="button" disabled={Boolean(pending)} onClick={() => void recover(row.sourceId, "reaudit")} className="rounded border px-2 py-1 hover:bg-accent disabled:opacity-50">Re-audit saved</button>}
+            {row.extracted > 0 && <button type="button" disabled={Boolean(pending)} onClick={() => void recover(row.sourceId, "reaudit")} className="rounded border px-2 py-1 hover:bg-accent disabled:opacity-50">Re-audit and merge</button>}
           </div>}
           {row.completed && <p className="text-muted-foreground">Completed</p>}
         </div>)}

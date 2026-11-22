@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { createHash } from "node:crypto";
-import { chunkImportedNotes } from "../src/core/notes-import-journal.ts";
+import { chunkImportedNotes, recoveryDecision } from "../src/core/notes-import-journal.ts";
 import { createNotesImportJournal } from "../src/store/notes-import-journal.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-recovery-"));
@@ -13,6 +13,18 @@ const sourceId = "src_" + createHash("sha256").update("theorems.pdf").digest("he
 const text = "Definition A\nTheorem B\nProof C\n";
 const chunks = chunkImportedNotes(text, 3);
 describe("resumable PDF checkpoints", () => {
+  it("never replays graph-mutating chunks, even in re-audit mode", () => {
+    const pending = { stage: "pending" as const, hash: "a" };
+    const extracted = { stage: "extracted" as const, hash: "b", findings: { propositions: [], chains: [] } };
+    const merging = { stage: "merging" as const, hash: "c" };
+    const merged = { stage: "merged" as const, hash: "d" };
+    assert.equal(recoveryDecision(pending, false), "resume");
+    assert.equal(recoveryDecision(pending, true), "skip");
+    assert.equal(recoveryDecision(extracted, true), "resume");
+    assert.equal(recoveryDecision(merging, false), "block");
+    assert.equal(recoveryDecision(merging, true), "block");
+    assert.equal(recoveryDecision(merged, false), "skip");
+  });
   it("survives reopening store and retains original chunk budget", () => {
     const store = createNotesImportJournal(dir);
     store.begin({ sourceId, filePath: "theorems.pdf", text, chunks, chunkBudget: 3, importedAt: "2026-11-22T00:00:00Z" });
