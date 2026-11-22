@@ -65,6 +65,7 @@
 
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportControl, NotesImportErrors, NotesImportNotices, useNotesImport } from "@/components/notes-import.tsx";
+import { ExistingNodeAuditControl } from "@/components/existing-node-audit.tsx";
 import { PluginGraphActions } from "@/components/plugin-chrome";
 import { SettingsSlider as SettingSlider } from "@/components/settings/controls";
 import Link from "next/link";
@@ -934,6 +935,7 @@ export function GraphChromeRow({
 				</div>
 			{/* Import notes — its own container (36px, header band); ALWAYS
 			    rendered (the empty-graph ruling above — the entry point). */}
+			{!isEmpty && <ExistingNodeAuditControl />}
 			<NotesImportControl importing={importing} onImportFiles={onImportFiles} />
 			{!isEmpty && (
 				// Rendering settings — own component; the gear toggles it. The
