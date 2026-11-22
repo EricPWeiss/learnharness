@@ -73,6 +73,7 @@ import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type 
 import { planCostLabel } from "@/components/usage-format";
 import { CLUSTER_LIGHTNESS, GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { computeInteractiveClusters } from "@/src/core/interactive-clusters.ts";
+import type { SourceOrganization } from "@/src/core/source-organization.ts";
 import { useAppearance } from "@/components/settings/appearance";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
@@ -472,10 +473,20 @@ function GraphSettingsControl({
 							<select aria-label="Clustering mode" className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
 								value={settings.clustering.mode}
 								onChange={e => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: e.target.value as GraphRenderSettings["clustering"]["mode"] } }))}>
-								<option value="source">Source (original PDFs)</option>
+								<option value="source">Source (individual PDFs)</option>
+								<option value="folder">Folder (existing folders)</option>
 								<option value="logical">Logical (reasoning chains)</option>
 								<option value="hybrid">Hybrid (weighted)</option>
 							</select>
+							{settings.clustering.mode === "folder" && <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+								Folder grouping level
+								<select aria-label="Folder grouping level" className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
+									value={settings.clustering.folderLevel}
+									onChange={e => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, folderLevel: e.target.value as GraphRenderSettings["clustering"]["folderLevel"] } }))}>
+									<option value="direct">Direct folder (subfolders separately)</option>
+									<option value="top">Top-level folder (include descendants)</option>
+								</select>
+							</label>}
 							<SettingSlider label="Logical weight" min={0} max={100} step={5}
 								value={settings.clustering.logicalWeight} display={settings.clustering.logicalWeight + "%"}
 								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, logicalWeight: p } }))} />
@@ -485,7 +496,7 @@ function GraphSettingsControl({
 							<SettingSlider label="Bridge influence" min={0} max={100} step={5}
 								value={settings.clustering.bridgeInfluence} display={settings.clustering.bridgeInfluence + "%"}
 								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, bridgeInfluence: p } }))} />
-							<p className="text-[10px] text-muted-foreground">{clusters.length} visible communities. Bridge weight currently uses cross-source chains as a proxy.</p>
+							<p className="text-[10px] text-muted-foreground">{clusters.length} visible communities. {settings.clustering.mode === "folder" ? "Folder names follow the existing Chains source tree; weights do not alter folder membership. Unfiled sources stay separate." : "Bridge weight currently uses cross-source chains as a proxy."}</p>
 							<button type="button" className="self-start rounded border px-2 py-1 text-[11px] hover:bg-accent"
 								onClick={() => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: "hybrid", logicalWeight: 50, granularity: 50, bridgeInfluence: 60 } }))}>
 								Reset clustering
@@ -1012,6 +1023,7 @@ export function GraphView({
 	const cardRef = useRef<HTMLDivElement | null>(null);
 	const { resolvedMode, colors } = useAppearance();
 	const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
+	const [organization, setOrganization] = useState<SourceOrganization | undefined>();
 	const [selected, setSelected] = useState<Selection | null>(null);
 	// The latest snapshot for the renderer's click callbacks (they are
 	// constructed once, so they read through this ref, never a closure).
@@ -1032,7 +1044,7 @@ export function GraphView({
 	// below (same names the old session state had).
 	const regionTuning = settings.regions;
 	const physicsTuning = settings.physics;
-	const activeClusters = useMemo(() => snapshot ? computeInteractiveClusters(snapshot.propositions, snapshot.chains, snapshot.clusters, settings.clustering) : [], [snapshot, settings.clustering]);
+	const activeClusters = useMemo(() => snapshot ? computeInteractiveClusters(snapshot.propositions, snapshot.chains, snapshot.clusters, settings.clustering, organization ?? snapshot.sourceOrganization) : [], [snapshot, settings.clustering, organization]);
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
 	// True once the user has moved a control this mount: the server copy
@@ -1123,7 +1135,7 @@ export function GraphView({
 		fetch("/api/graph")
 			.then((res) => res.json() as Promise<GraphSnapshot>)
 			.then((data) => {
-				if (!cancelled) setSnapshot(data);
+				if (!cancelled) { setSnapshot(data); setOrganization(data.sourceOrganization); }
 			})
 			.catch((err) => console.error("[graph] fetch failed:", err));
 		return () => {
@@ -1253,6 +1265,14 @@ export function GraphView({
 	   hull-only silence — the null-label guard lives in the channel
 	   (applyClusterLabels): a rename can't reach a gone record. */
 	const [, setLabelTick] = useState(0);
+	useEffect(() => {
+		const onOrganizationChanged = (event: Event) => {
+			const next = (event as CustomEvent<SourceOrganization>).detail;
+			if (next?.version === 1 && Array.isArray(next.folders)) setOrganization(next);
+		};
+		window.addEventListener("lh:source-organization-changed", onOrganizationChanged);
+		return () => window.removeEventListener("lh:source-organization-changed", onOrganizationChanged);
+	}, []);
 	useEffect(() => {
 		const onRenamed = (e: Event) => {
 			const { id, title } = (e as CustomEvent<{ id?: string; title?: string }>).detail ?? {};
@@ -1643,7 +1663,22 @@ export function GraphView({
 					settings={settings}
 					changeSettings={changeSettings}
 					clusters={activeClusters}
-					onRenameCluster={(id, label, members) => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, names: { ...cur.clustering.names, [cur.clustering.mode + ":" + id]: { label, members: members.filter(x => x.startsWith("n_")) } } } }))}
+					onRenameCluster={(id, label, members) => {
+						if (settings.clustering.mode === "folder" && id.startsWith("folder:")) {
+							// Rename the real source folder rather than a local visual alias.
+							void fetch("/api/graph/sources", {
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ action: "rename-folder", id: id.slice("folder:".length), name: label }),
+							}).then(async response => {
+								const body = await response.json();
+								if (!response.ok) throw new Error(body.error ?? "Could not rename folder");
+								window.dispatchEvent(new CustomEvent("lh:source-organization-changed", { detail: body.organization }));
+							}).catch(error => window.alert("Could not rename folder: " + (error instanceof Error ? error.message : String(error))));
+							return;
+						}
+						changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, names: { ...cur.clustering.names, [cur.clustering.mode + ":" + id]: { label, members: members.filter(x => x.startsWith("n_")) } } } }));
+					}}
 					onOpenChains={() => setChainsOpen(true)}
 				/>
 			</div>
