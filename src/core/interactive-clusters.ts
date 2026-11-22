@@ -5,18 +5,21 @@
  */
 import type { Cluster, GraphChain, GraphNode } from "./contracts.ts";
 import { MIN_CLUSTER_SIZE } from "./clusters.ts";
+import { clusterByFolder, type FolderGroupingLevel } from "./folder-clusters.ts";
+import type { SourceOrganization } from "./source-organization.ts";
 
-export type ClusterMode = "source" | "logical" | "hybrid";
+export type ClusterMode = "source" | "folder" | "logical" | "hybrid";
 export interface SavedClusterName { label: string; members: string[] }
 export interface InteractiveClusterSettings {
   mode: ClusterMode;
+  folderLevel: FolderGroupingLevel;
   logicalWeight: number;
   granularity: number;
   bridgeInfluence: number;
   names: Record<string, SavedClusterName>;
 }
 export const DEFAULT_CLUSTER_SETTINGS: InteractiveClusterSettings = {
-  mode: "hybrid", logicalWeight: 50, granularity: 50, bridgeInfluence: 60, names: {},
+  mode: "hybrid", folderLevel: "direct", logicalWeight: 50, granularity: 50, bridgeInfluence: 60, names: {},
 };
 const percent = (v: unknown, fallback: number): number =>
   typeof v === "number" && Number.isFinite(v) ? Math.round(Math.max(0, Math.min(100, v))) : fallback;
@@ -26,7 +29,7 @@ export function sanitizeInteractiveClusterSettings(raw: unknown): InteractiveClu
   const names: Record<string, SavedClusterName> = {};
   if (r.names && typeof r.names === "object" && !Array.isArray(r.names)) {
     for (const [key, value] of Object.entries(r.names).slice(0, 250)) {
-      if (!/^(source|logical|hybrid):[A-Za-z0-9_-]+$/.test(key)) continue;
+      if (!/^(source|folder|logical|hybrid):[A-Za-z0-9_:-]+$/.test(key)) continue;
       if (!value || typeof value !== "object" || typeof value.label !== "string" || !value.label.trim()) continue;
       names[key] = {
         label: value.label.trim().slice(0, 100),
@@ -37,7 +40,8 @@ export function sanitizeInteractiveClusterSettings(raw: unknown): InteractiveClu
     }
   }
   return {
-    mode: r.mode === "source" || r.mode === "logical" || r.mode === "hybrid" ? r.mode : "hybrid",
+    mode: r.mode === "source" || r.mode === "folder" || r.mode === "logical" || r.mode === "hybrid" ? r.mode : "hybrid",
+    folderLevel: r.folderLevel === "top" ? "top" : "direct",
     logicalWeight: percent(r.logicalWeight, 50),
     granularity: percent(r.granularity, 50),
     bridgeInfluence: percent(r.bridgeInfluence, 60),
@@ -51,6 +55,7 @@ export function computeInteractiveClusters(
   chains: readonly GraphChain[],
   sourceClusters: readonly Cluster[],
   tuning: InteractiveClusterSettings,
+  organization?: SourceOrganization,
 ): Cluster[] {
   const mode = tuning.mode;
   const rename = (groups: Cluster[]): Cluster[] => {
@@ -59,6 +64,8 @@ export function computeInteractiveClusters(
       .map(([key, rec]) => ({ key, rec, set: new Set(rec.members) }));
     const used = new Set<string>();
     return groups.map(group => {
+      // The existing folder name is authoritative, not a saved display override.
+      if (mode === "folder" && group.id.startsWith("folder:")) return group;
       const key = mode + ":" + group.id;
       const exact = tuning.names[key];
       if (exact) { used.add(key); return { ...group, label: exact.label }; }
@@ -76,6 +83,7 @@ export function computeInteractiveClusters(
     });
   };
   if (mode === "source") return rename(sourceClusters.map(c => ({ ...c, members: [...c.members] })));
+  if (mode === "folder") return rename(clusterByFolder(propositions, chains, sourceClusters, organization, tuning.folderLevel));
   const byId = new Map(propositions.map(n => [n.id, n]));
   const ids = [...byId.keys()].sort();
   if (!ids.length) return [];

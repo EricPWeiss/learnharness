@@ -19,6 +19,7 @@
 // ─── Knowledge graph (vision §1 — global, cross-session) ────────────────────
 
 import type { CallUsage, ExtractionRunUsage } from "./chat.ts";
+import type { SourceOrganization } from "../source-organization.ts";
 
 /** Directed relation derived from stored reasoning chains, not an independent
  * ledger record. Canvas edges connect a single premise directly to its
@@ -310,6 +311,8 @@ export interface GraphSnapshot {
 	 *  graph (the format-agnostic front door): a static provenance entry —
 	 *  the detail card shows the path as plain text, not a link. */
 	fileSources: Record<string, string>;
+	/** Folder organization for optional folder-grouped graph regions. */
+	sourceOrganization?: SourceOrganization;
 	/** nodeId → chatIds that touched the node (click-through provenance). */
 	nodeSessions: Record<string, string[]>;
 	/** Birth-session communities (core/session-clusters.ts: each
