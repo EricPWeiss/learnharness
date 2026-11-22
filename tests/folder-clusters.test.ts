@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Cluster, GraphChain, GraphNode } from "../src/core/contracts.ts";
 import type { SourceOrganization } from "../src/core/source-organization.ts";
-import { clusterByFolder } from "../src/core/folder-clusters.ts";
+import { clusterByFolder, folderAffinityGroups } from "../src/core/folder-clusters.ts";
 import { computeInteractiveClusters, DEFAULT_CLUSTER_SETTINGS, sanitizeInteractiveClusterSettings } from "../src/core/interactive-clusters.ts";
 
 const proposition = (id: string, src: string): GraphNode => ({
@@ -44,6 +44,24 @@ describe("folder-based clusters", () => {
     const grouped = computeInteractiveClusters(nodes,chains,sources,{...DEFAULT_CLUSTER_SETTINGS,mode:"folder"},renamed);
     assert.equal(grouped.find(g=>g.id==="folder:folder_child")?.label,"Renamed folder");
     assert.equal(JSON.stringify([nodes,chains,sources]),before);
+  });
+  it("folder hybrid uses additive parent/subfolder groups and no source fallback", () => {
+    const groups = folderAffinityGroups(nodes, organization);
+    assert.deepEqual(groups.find(g => g.folderId === "folder_child")?.members, ["n_a", "n_b", "n_c", "n_d"]);
+    assert.deepEqual(groups.find(g => g.folderId === "folder_root")?.members, ["n_a", "n_b", "n_c", "n_d", "n_e", "n_f"]);
+    assert.equal(groups.filter(g => g.members.includes("n_a") && g.members.includes("n_b")).length, 2);
+    assert.equal(groups.filter(g => g.members.includes("n_a") && g.members.includes("n_e")).length, 1);
+    assert.ok(groups.every(g => !g.members.includes("n_g")), "unfiled sources do not get PDF priors");
+  });
+  it("folder hybrid remains distinct from the existing PDF-based hybrid", () => {
+    const tuned = { ...DEFAULT_CLUSTER_SETTINGS, mode: "folder-hybrid" as const, logicalWeight: 0 };
+    assert.ok(computeInteractiveClusters(nodes, [], sources, tuned, organization).length > 0);
+    assert.deepEqual(computeInteractiveClusters(nodes, [], sources, tuned, undefined), []);
+    assert.ok(computeInteractiveClusters(nodes, [], sources,
+      { ...DEFAULT_CLUSTER_SETTINGS, mode: "hybrid", logicalWeight: 0 }, undefined).length > 0);
+  });
+  it("accepts folder-hybrid in saved settings", () => {
+    assert.equal(sanitizeInteractiveClusterSettings({ mode: "folder-hybrid" }).mode, "folder-hybrid");
   });
   it("sanitizes folder mode and level and preserves old configs", () => {
     assert.equal(sanitizeInteractiveClusterSettings({mode:"folder",folderLevel:"top"}).folderLevel,"top");

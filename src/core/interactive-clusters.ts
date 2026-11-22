@@ -1,14 +1,14 @@
 /**
- * View-only cluster exploration: source, logical, and hybrid partitions.
+ * View-only cluster exploration: source, folder, logical, and hybrid partitions.
  * The underlying graph's proposition/chain ledgers are never rewritten.
  * No external services, embeddings, or mutable state.
  */
 import type { Cluster, GraphChain, GraphNode } from "./contracts.ts";
 import { MIN_CLUSTER_SIZE } from "./clusters.ts";
-import { clusterByFolder, type FolderGroupingLevel } from "./folder-clusters.ts";
+import { clusterByFolder, folderAffinityGroups, type FolderGroupingLevel } from "./folder-clusters.ts";
 import type { SourceOrganization } from "./source-organization.ts";
 
-export type ClusterMode = "source" | "folder" | "logical" | "hybrid";
+export type ClusterMode = "source" | "folder" | "logical" | "hybrid" | "folder-hybrid";
 export interface SavedClusterName { label: string; members: string[] }
 export interface InteractiveClusterSettings {
   mode: ClusterMode;
@@ -29,7 +29,7 @@ export function sanitizeInteractiveClusterSettings(raw: unknown): InteractiveClu
   const names: Record<string, SavedClusterName> = {};
   if (r.names && typeof r.names === "object" && !Array.isArray(r.names)) {
     for (const [key, value] of Object.entries(r.names).slice(0, 250)) {
-      if (!/^(source|folder|logical|hybrid):[A-Za-z0-9_:-]+$/.test(key)) continue;
+      if (!/^(source|folder|logical|hybrid|folder-hybrid):[A-Za-z0-9_:-]+$/.test(key)) continue;
       if (!value || typeof value !== "object" || typeof value.label !== "string" || !value.label.trim()) continue;
       names[key] = {
         label: value.label.trim().slice(0, 100),
@@ -40,7 +40,7 @@ export function sanitizeInteractiveClusterSettings(raw: unknown): InteractiveClu
     }
   }
   return {
-    mode: r.mode === "source" || r.mode === "folder" || r.mode === "logical" || r.mode === "hybrid" ? r.mode : "hybrid",
+    mode: r.mode === "source" || r.mode === "folder" || r.mode === "logical" || r.mode === "hybrid" || r.mode === "folder-hybrid" ? r.mode : "hybrid",
     folderLevel: r.folderLevel === "top" ? "top" : "direct",
     logicalWeight: percent(r.logicalWeight, 50),
     granularity: percent(r.granularity, 50),
@@ -88,6 +88,23 @@ export function computeInteractiveClusters(
   const ids = [...byId.keys()].sort();
   if (!ids.length) return [];
   const source = (id: string): string => byId.get(id)?.provenance[0]?.chatId ?? "";
+  const folderById = new Map((organization?.folders ?? []).map(folder => [folder.id, folder]));
+  const directFolder = (id: string): string | null => {
+    const birth = source(id);
+    const placed = birth ? organization?.placements[birth]?.folderId : null;
+    return placed && folderById.has(placed) ? placed : null;
+  };
+  const folderAncestors = (id: string): string[] => {
+    const ancestors: string[] = [];
+    const seen = new Set<string>();
+    let current = directFolder(id);
+    while (current !== null && !seen.has(current)) {
+      seen.add(current);
+      ancestors.push(current);
+      current = folderById.get(current)?.parentId ?? null;
+    }
+    return ancestors;
+  };
   const links = new Map(ids.map(id => [id, new Map<string, number>()]));
   const add = (a: string, b: string, w: number) => {
     if (a === b || !links.has(a) || !links.has(b) || w <= 0) return;
@@ -101,9 +118,11 @@ export function computeInteractiveClusters(
     if (!byId.has(ch.conclusion)) continue;
     const premises = [...new Set(ch.premises)].filter(p => byId.has(p) && p !== ch.conclusion);
     for (const p of premises) {
-      // Until a bridge-only document kind exists, cross-source chains are a proxy.
-      const acrossSource = source(p) !== source(ch.conclusion);
-      const boost = acrossSource ? 1 + 2 * tuning.bridgeInfluence / 100 : 1;
+      // Folder Hybrid boosts cross-folder links instead of cross-PDF links.
+      const crossesBoundary = mode === "folder-hybrid"
+        ? directFolder(p) !== directFolder(ch.conclusion)
+        : source(p) !== source(ch.conclusion);
+      const boost = crossesBoundary ? 1 + 2 * tuning.bridgeInfluence / 100 : 1;
       add(p, ch.conclusion, logicalWeight * boost / Math.sqrt(premises.length));
     }
   }
@@ -117,6 +136,16 @@ export function computeInteractiveClusters(
     }
     for (const members of sourceGroups.values()) {
       if (members.length < 2) continue;
+      for (let i = 0; i < members.length; i++) {
+        for (let delta = 1; delta <= Math.min(2, members.length - 1); delta++)
+          add(members[i]!, members[(i + delta) % members.length]!, (1 - alpha) * 2 / delta);
+      }
+    }
+  }
+  if (mode === "folder-hybrid" && alpha < 1) {
+    // Overlapping parent/subfolder memberships add their affinities.
+    // Same-subfolder nodes share that folder AND their ancestors.
+    for (const { members } of folderAffinityGroups(propositions, organization)) {
       for (let i = 0; i < members.length; i++) {
         for (let delta = 1; delta <= Math.min(2, members.length - 1); delta++)
           add(members[i]!, members[(i + delta) % members.length]!, (1 - alpha) * 2 / delta);
@@ -164,7 +193,25 @@ export function computeInteractiveClusters(
     for (const id of members) { const s = source(id); counts.set(s, (counts.get(s) ?? 0) + 1); }
     const lead = [...counts].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]))[0];
     const central = [...members].sort((a,b) => degrees.get(b)!-degrees.get(a)! || a.localeCompare(b))[0]!;
-    const label = (lead && lead[1] / members.length >= 0.72 ? sourceLabels.get(lead[0]) : null)
+    let folderLabel: string | null = null;
+    if (mode === "folder-hybrid") {
+      // Prefer the deepest folder shared by a strong majority.
+      const counts = new Map<string, { count: number; depth: number }>();
+      for (const id of members) {
+        const ancestors = folderAncestors(id);
+        for (let i = 0; i < ancestors.length; i++) {
+          const fid = ancestors[i]!;
+          const prev = counts.get(fid);
+          counts.set(fid, { count: (prev?.count ?? 0) + 1,
+            depth: Math.max(ancestors.length - i, prev?.depth ?? 0) });
+        }
+      }
+      const winner = [...counts].filter(([, value]) => value.count / members.length >= 0.6)
+        .sort((a, b) => b[1].depth - a[1].depth || b[1].count - a[1].count || a[0].localeCompare(b[0]))[0];
+      folderLabel = winner ? folderById.get(winner[0])?.name ?? null : null;
+    }
+    const label = (mode === "folder-hybrid" ? folderLabel :
+      (lead && lead[1] / members.length >= 0.72 ? sourceLabels.get(lead[0]) : null))
       ?? byId.get(central)?.name ?? "Related propositions";
     result.push({ id: mode + "_" + members[0], label, members: [...members] });
   }

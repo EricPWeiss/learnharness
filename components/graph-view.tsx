@@ -476,7 +476,8 @@ function GraphSettingsControl({
 								<option value="source">Source (individual PDFs)</option>
 								<option value="folder">Folder (existing folders)</option>
 								<option value="logical">Logical (reasoning chains)</option>
-								<option value="hybrid">Hybrid (weighted)</option>
+								<option value="hybrid">Source Hybrid (PDF + logic)</option>
+								<option value="folder-hybrid">Folder Hybrid (folders + logic)</option>
 							</select>
 							{settings.clustering.mode === "folder" && <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
 								Folder grouping level
@@ -496,7 +497,7 @@ function GraphSettingsControl({
 							<SettingSlider label="Bridge influence" min={0} max={100} step={5}
 								value={settings.clustering.bridgeInfluence} display={settings.clustering.bridgeInfluence + "%"}
 								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, bridgeInfluence: p } }))} />
-							<p className="text-[10px] text-muted-foreground">{clusters.length} visible communities. {settings.clustering.mode === "folder" ? "Folder names follow the existing Chains source tree; weights do not alter folder membership. Unfiled sources stay separate." : "Bridge weight currently uses cross-source chains as a proxy."}</p>
+							<p className="text-[10px] text-muted-foreground">{clusters.length} visible communities. {settings.clustering.mode === "folder" ? "Folder names follow the existing Chains source tree; weights do not alter folder membership. Unfiled sources stay separate." : settings.clustering.mode === "folder-hybrid" ? "Folder Hybrid weights both parent and subfolder memberships, plus reasoning chains. Cross-folder chains get bridge influence; unfiled sources have no folder prior." : "Bridge weight currently uses cross-source chains as a proxy."}</p>
 							<button type="button" className="self-start rounded border px-2 py-1 text-[11px] hover:bg-accent"
 								onClick={() => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: "hybrid", logicalWeight: 50, granularity: 50, bridgeInfluence: 60 } }))}>
 								Reset clustering

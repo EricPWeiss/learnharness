@@ -8,6 +8,38 @@ import { MIN_CLUSTER_SIZE } from "./clusters.ts";
 
 export type FolderGroupingLevel = "direct" | "top";
 
+/**
+ * Additive folder hierarchy prior for Folder Hybrid clustering.
+ * Each proposition belongs to its immediate folder and all ancestors,
+ * so sharing a subfolder generates more affinities than sharing only a
+ * parent folder. The source's PDF identity is not used as a prior.
+ */
+export function folderAffinityGroups(
+  propositions: readonly GraphNode[],
+  organization: SourceOrganization | undefined,
+): Array<{ folderId: string; members: string[] }> {
+  if (!organization) return [];
+  const folders = new Map(organization.folders.map(folder => [folder.id, folder]));
+  const membership = new Map<string, Set<string>>();
+  for (const node of propositions) {
+    const birth = node.provenance[0]?.chatId;
+    let folderId: string | null = birth ? organization.placements[birth]?.folderId ?? null : null;
+    const seen = new Set<string>();
+    while (folderId !== null && folders.has(folderId) && !seen.has(folderId)) {
+      seen.add(folderId);
+      const members = membership.get(folderId) ?? new Set<string>();
+      members.add(node.id);
+      membership.set(folderId, members);
+      folderId = folders.get(folderId)!.parentId;
+    }
+  }
+  return [...membership]
+    .map(([folderId, members]) => ({ folderId, members: [...members].sort() }))
+    .filter(group => group.members.length >= 2)
+    .sort((a, b) => a.folderId.localeCompare(b.folderId));
+}
+
+
 export function clusterByFolder(
   propositions: readonly GraphNode[],
   chains: readonly GraphChain[],
