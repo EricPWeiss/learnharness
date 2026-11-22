@@ -40,7 +40,7 @@ export function deleteSources(raw: unknown): SourceDirectory & { graphRevision: 
 	// coverage/checkpoints too, so their unchanged messages can be re-extracted.
 	deleteSourcesTraces(stores.graphStore, new Set(targets.map((s) => s.id)), "delete-nodes");
 	stores.graphStore.deleteSources(new Set(targets.filter((s) => s.kind === "notes").map((s) => s.id)));
-	notesImportJournal.remove(new Set(targets.filter((s) => s.kind === "notes").map((s) => s.id)));
+	notesImportJournal.remove(new Set(targets.filter((s) => s.kind === "notes" && /^src_[a-f0-9]{12}$/.test(s.id)).map((s) => s.id)));
 	const removed = new Set(request.sourceIds.filter((id) => !directory.sources.some((s) => s.id === id)));
 	for (const entry of targets) {
 		if (entry.kind === "chat" && request.deleteSessions) {

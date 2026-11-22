@@ -1439,6 +1439,10 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		inFlight.add(id);
 		try {
 			const saved = deps.notesJournal?.load(id);
+			if (deps.notesJournal && !saved && graphStore.readSources().some(s => s.id === id)) {
+				throw new NotesImportError("failed", { nodes: 0, chains: 0 },
+					"This source predates resumable imports. It cannot be reimported automatically; back up your graph and delete the source before importing a new copy.");
+			}
 			if (saved && (saved.text !== input.text || saved.record.filePath !== input.filePath)) {
 				throw new NotesImportError("failed", { nodes: 0, chains: 0 },
 					"Saved content differs. Delete this source and its graph traces before importing a changed version.");
