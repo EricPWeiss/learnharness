@@ -153,6 +153,8 @@ export interface CanvasData {
 }
 
 export interface RendererCallbacks {
+	/** Hovered node, for displaying current source/folder provenance. */
+	onHover?: (nodeId: string | null, screenPos: { x: number; y: number }) => void;
 	/** A node was clicked (screen position included for card anchoring). */
 	onSelect: (nodeId: string, screenPos: Pt) => void;
 	/** Right-click: the picked node (canvas-relative screen position) or
@@ -982,7 +984,10 @@ export class GraphCanvasRenderer {
 			return;
 		}
 		const node = this.pickAt(pos.x, pos.y);
-		if ((node?.id ?? null) !== this.hoverId) this.setHover(node?.id ?? null);
+		if ((node?.id ?? null) !== this.hoverId) {
+			this.setHover(node?.id ?? null);
+			this.callbacks.onHover?.(node?.id ?? null, pos);
+		}
 		this.canvas.style.cursor = node ? "pointer" : "";
 	};
 
@@ -1073,6 +1078,7 @@ export class GraphCanvasRenderer {
 		if (this.dragId) return; // pointer capture keeps the drag alive
 		this.downPos = null;
 		this.setHover(null);
+		this.callbacks.onHover?.(null, { x: 0, y: 0 });
 	};
 
 	// ── Internals ──

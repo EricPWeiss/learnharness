@@ -74,6 +74,7 @@ import { planCostLabel } from "@/components/usage-format";
 import { CLUSTER_LIGHTNESS, GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { computeInteractiveClusters } from "@/src/core/interactive-clusters.ts";
 import type { SourceOrganization } from "@/src/core/source-organization.ts";
+import { sourceFolderBreadcrumb } from "@/src/core/source-folder-breadcrumb.ts";
 import { useAppearance } from "@/components/settings/appearance";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
@@ -1026,6 +1027,7 @@ export function GraphView({
 	const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
 	const [organization, setOrganization] = useState<SourceOrganization | undefined>();
 	const [selected, setSelected] = useState<Selection | null>(null);
+	const [hovered, setHovered] = useState<{ nodeId: string; pos: { x: number; y: number } } | null>(null);
 	// The latest snapshot for the renderer's click callbacks (they are
 	// constructed once, so they read through this ref, never a closure).
 	const snapshotRef = useRef<GraphSnapshot | null>(null);
@@ -1398,6 +1400,7 @@ export function GraphView({
 		const renderer = new GraphCanvasRenderer(
 			canvas,
 			{
+				onHover: (nodeId, pos) => setHovered(nodeId === null ? null : { nodeId, pos }),
 				onSelect: (nodeId, pos) => {
 					const snap = snapshotRef.current;
 					const node = snap?.nodes.find((n) => n.id === nodeId);
@@ -1427,6 +1430,7 @@ export function GraphView({
 				// context menu closes with it: a menu floating over a moved
 				// graph is anchored to nothing.
 				onCameraMove: (t) => {
+					setHovered(null);
 					setSelected(null);
 					setCtxNode(null);
 					persistCamera(t);
@@ -1558,6 +1562,24 @@ export function GraphView({
 					{/* THE single canvas: every layer (hulls, edges, nodes, both
 					    label systems, hover) draws into it, once per frame. */}
 					<canvas ref={canvasRef} className="block h-full w-full touch-none" />
+					{/* Pointer-transparent hover tooltip for provenance and current folder paths. */}
+					{hovered && !selected && snapshot && (() => {
+						const node = snapshot.propositions.find(n => n.id === hovered.nodeId);
+						const ids = snapshot.nodeSessions[hovered.nodeId] ?? [];
+						if (!node || ids.length === 0) return null;
+						const org = organization ?? snapshot.sourceOrganization;
+						return <div role="tooltip" className="pointer-events-none absolute z-20 w-64 max-w-[calc(100%-1rem)] rounded-lg border bg-card/95 p-2.5 text-xs shadow-lg backdrop-blur"
+							style={{
+								left: Math.max(8, Math.min(hovered.pos.x + 14, (containerRef.current?.clientWidth ?? 600) - 270)),
+								top: Math.max(8, Math.min(hovered.pos.y + 14, (containerRef.current?.clientHeight ?? 400) - 130)),
+							}}>
+							<div className="mb-1 font-medium">{node.name}</div>
+							{ids.map(id => <div key={id} className="mt-1 min-w-0">
+								<div className="truncate text-muted-foreground">{snapshot.sessions[id] ?? snapshot.fileSources[id] ?? id}</div>
+								<div className="break-words text-foreground">{sourceFolderBreadcrumb(org, id) ?? "Unfiled"}</div>
+							</div>)}
+						</div>;
+					})()}
 					{/* The context menu's anchor: a zero-size point at the
 					    right-click position (canvas-relative == container-relative,
 					    the canvas fills this div). */}
