@@ -55,7 +55,10 @@ describe("folder-based clusters", () => {
   });
   it("folder hybrid remains distinct from the existing PDF-based hybrid", () => {
     const tuned = { ...DEFAULT_CLUSTER_SETTINGS, mode: "folder-hybrid" as const, logicalWeight: 0 };
-    assert.ok(computeInteractiveClusters(nodes, [], sources, tuned, organization).length > 0);
+    const groups = computeInteractiveClusters(nodes, [], sources, tuned, organization);
+    assert.ok(groups.length > 0, "a folder prior should produce visible communities without logical chains");
+    assert.ok(groups.some(group => ["n_a", "n_b", "n_c", "n_d"].every(id => group.members.includes(id))),
+      "the immediate subfolder should remain a visible group at the default granularity");
     assert.deepEqual(computeInteractiveClusters(nodes, [], sources, tuned, undefined), []);
     assert.ok(computeInteractiveClusters(nodes, [], sources,
       { ...DEFAULT_CLUSTER_SETTINGS, mode: "hybrid", logicalWeight: 0 }, undefined).length > 0);

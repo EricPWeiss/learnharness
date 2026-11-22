@@ -155,7 +155,14 @@ export function computeInteractiveClusters(
   const degrees = new Map(ids.map(id => [id, [...links.get(id)!.values()].reduce((a,b)=>a+b,0)]));
   const total2m = [...degrees.values()].reduce((a,b)=>a+b,0);
   if (total2m <= 0) return [];
-  const gamma = 0.35 + 2.7 * tuning.granularity / 100;
+  // The folder hierarchy creates overlapping parent/subfolder links.
+  // Its degrees are higher than the one-source prior, so using the
+  // same resolution scale fragments ordinary folders into 1–2 node
+  // groups, which the >=3-node hull filter then hides completely.
+  // Keep the original resolution mapping for Source Hybrid and Logical.
+  const gamma = mode === "folder-hybrid"
+    ? 0.25 + 1.6 * tuning.granularity / 100
+    : 0.35 + 2.7 * tuning.granularity / 100;
   const community = new Map(ids.map(id => [id,id]));
   const volumes = new Map(ids.map(id => [id,degrees.get(id)!]));
   for (let iteration = 0; iteration < 35; iteration++) {
