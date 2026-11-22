@@ -27,6 +27,7 @@ import type { GraphStore } from "../../core/ports.ts";
 import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
+import { chunkImportedNotes, type NotesImportJournal } from "../../core/notes-import-journal.ts";
 import { failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
 import { prepareAuditorReview } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
@@ -742,6 +743,7 @@ export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
 	 *  callers wire the live effective settings (extraction-UX redesign,
 	 *  2026-09-24). */
 	getChunkTokens?: () => number;
+	notesJournal?: NotesImportJournal;
 }
 
 export interface NotesImportInput {
@@ -775,6 +777,7 @@ export interface ExtractionPipeline {
 	 *  path, so re-importing the same file re-runs extraction against the
 	 *  same source identity (mappings dedupe by it). */
 	importNotes(input: NotesImportInput): Promise<EmissionStats>;
+	resumeNotes(sourceId: string, auditOnly?: boolean): Promise<EmissionStats>;
 }
 
 /** pi's per-step usage, flattened to the persisted CallUsage fields
@@ -1242,22 +1245,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	 * weak model — 26 propositions, structure bleed mid-emission).
 	 * Greedy by line, chars/4 like every other estimate in the app; a
 	 * single over-budget line rides alone (never split a line). */
-	function chunkNotes(text: string, budget: number): string[] {
-		if (text.trim().length === 0) return [];
-		const out: string[] = [];
-		let current = "";
-		for (const line of text.split("\n")) {
-			const candidate = current.length === 0 ? line : current + "\n" + line;
-			if (current.length > 0 && Math.ceil(candidate.length / 4) > budget) {
-				out.push(current);
-				current = line;
-			} else {
-				current = candidate;
-			}
-		}
-		if (current.trim().length > 0) out.push(current);
-		return out;
-	}
+	const chunkNotes = chunkImportedNotes;
 
 	async function notesExtract(
 		jobKey: string,
@@ -1297,7 +1285,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	// The notes auditor is the SAME identity-linker as the chat one (one
 	// schema now that attribution is gone) — audit() above, verbatim.
 
-	async function runNotesExtraction(input: { id: string; filePath: string; text: string; importedAt: string }): Promise<EmissionStats> {
+	async function runNotesExtraction(input: { id: string; filePath: string; text: string; importedAt: string; auditOnly?: boolean }): Promise<EmissionStats> {
 		const { id } = input;
 		// importNotes owns the source exclusion, including metadata and cleanup.
 		const t0 = performance.now();
@@ -1311,8 +1299,13 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
 			// (same doctrine as chat batches).
-			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
+			const chunkTokens = deps.notesJournal?.load(id)?.record.chunkBudget ??
+				(deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens);
 			const chunks = chunkNotes(input.text, chunkTokens);
+			const record = deps.notesJournal?.begin({
+				sourceId: id, filePath: input.filePath, text: input.text,
+				chunkBudget: chunkTokens, chunks, importedAt: input.importedAt,
+			});
 			console.info(
 				`[extraction ${id}] notes pipeline start (${input.filePath}) — ${chunks.length} chunk(s) of ≤${chunkTokens} tok`,
 			);
@@ -1326,6 +1319,15 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// the file actually chunked.
 			const settled: PromiseSettledResult<EmissionStats>[] = [];
 			for (const [chunkIndex, chunk] of chunks.entries()) {
+				const saved = record?.chunks[chunkIndex];
+				if (saved?.stage === "merged") continue;
+				if (saved?.stage === "merging") {
+					settled.push({ status: "rejected", reason: new Error(
+						"Chunk " + (chunkIndex + 1) + " has an uncertain merge outcome after interruption. Inspect the graph before deleting/reimporting this source."
+					) });
+					break;
+				}
+				if (input.auditOnly && !saved?.findings) continue;
 				const part = chunks.length > 1 ? { i: chunkIndex + 1, n: chunks.length } : undefined;
 				// Keep the actual signal after runJob tears down its registry row:
 				// usage persistence can throw and mask the body's AbortError.
@@ -1336,14 +1338,27 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 						value: await runJob({ id, kind: "notes", label: input.filePath, part }, async (jobKey) => {
 							setPhase(jobKey, "extracting", "notes", input.filePath, part);
 							chunkSignal = runningExtractions.get(jobKey)?.controller.signal;
-							const findings = await notesExtract(jobKey, { ...input, text: chunk, part });
+							let findings = saved?.findings;
+							if (!findings) {
+								findings = await notesExtract(jobKey, { ...input, text: chunk, part });
+								deps.notesJournal?.patchChunk(id, chunkIndex, {
+									stage: "extracted", findings, error: undefined,
+								});
+							}
 							// SERIALIZED AUDIT (owner, 2026-09-28): audit + merge one
 							// at a time, process-wide — the auditor explores the graph
 							// as it stands AFTER every earlier job's merge. Reacquired
 							// per chunk so cross-source runs interleave fairly.
 							return withAuditLock(jobKey, "notes", input.filePath, async () => {
 								setPhase(jobKey, "auditing", "notes", input.filePath, part);
-								const auditResult = await audit(jobKey, input.id, findings);
+								const auditResult = input.auditOnly || !saved?.audit
+									? await audit(jobKey, input.id, findings) : saved.audit;
+								deps.notesJournal?.patchChunk(id, chunkIndex, {
+									stage: "audited", findings, audit: auditResult, error: undefined,
+								});
+								// Conservative write-ahead guard: interrupted ledger appends
+								// cannot be safely replayed without a graph inspection.
+								deps.notesJournal?.patchChunk(id, chunkIndex, { stage: "merging" });
 								setPhase(jobKey, "merging", "notes", input.filePath, part);
 								const merged = mergeFindings(
 									id,
@@ -1352,6 +1367,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 									{ chatStore, graphStore },
 									{ foldedAt: input.importedAt },
 								);
+								deps.notesJournal?.patchChunk(id, chunkIndex, {
+									stage: "merged", finishedAt: new Date().toISOString(),
+								});
 								// Capture the committed merge BEFORE layout/usage can fail.
 								mergedStats.nodes += merged.nodes;
 								mergedStats.chains! += merged.chains ?? 0;
@@ -1366,6 +1384,12 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 						}),
 					});
 				} catch (err) {
+					if (record) {
+						const latest = deps.notesJournal?.load(id)?.record.chunks[chunkIndex];
+						if (latest && latest.stage !== "merged") deps.notesJournal?.patchChunk(id, chunkIndex, {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 					let failure = err;
 					if (chunkSignal?.aborted && !(err instanceof Error && err.name === "AbortError")) {
 						// Notes-only: never start a fresh chunk after user cancellation,
@@ -1385,7 +1409,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// Completion is a chunk-status contract, never a node-count test.
 			// Zero findings (and an empty file after the readiness gate) are valid.
 			const rejected = settled.filter((r) => r.status === "rejected");
-			if (rejected.length > 0 || settled.length !== chunks.length) {
+			if (rejected.length > 0 || (!input.auditOnly && (record ? Boolean(deps.notesJournal?.load(id)?.record.chunks.some(c => c.stage !== "merged")) : settled.length !== chunks.length))) {
 				const aborted = rejected.some((r) => r.reason instanceof Error && r.reason.name === "AbortError");
 				const outcome = aborted ? "aborted" : settled.some((r) => r.status === "fulfilled") ? "partial" : "failed";
 				const details = rejected.map((r) => r.reason instanceof Error ? r.reason.message : String(r.reason)).join("; ");
@@ -1414,8 +1438,13 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");
 		inFlight.add(id);
 		try {
-			const importedAt = new Date().toISOString();
-			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
+			const saved = deps.notesJournal?.load(id);
+			if (saved && (saved.text !== input.text || saved.record.filePath !== input.filePath)) {
+				throw new NotesImportError("failed", { nodes: 0, chains: 0 },
+					"Saved content differs. Delete this source and its graph traces before importing a changed version.");
+			}
+			const importedAt = saved?.record.importedAt ?? new Date().toISOString();
+			if (!saved) graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });
 		} catch (err) {
 			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;
@@ -1425,6 +1454,20 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		}
 	}
 
-	return { runExtraction, importNotes };
+	async function resumeNotes(sourceId: string, auditOnly = false): Promise<EmissionStats> {
+		if (!deps.notesJournal) throw new Error("Import recovery is unavailable.");
+		const saved = deps.notesJournal.load(sourceId);
+		if (!saved) throw new Error("No saved import for this source.");
+		if (inFlight.has(sourceId)) throw new NotesImportError("busy", { nodes: 0, chains: 0 },
+			"This source is currently being imported.");
+		inFlight.add(sourceId);
+		try {
+			return await runNotesExtraction({
+				id: sourceId, filePath: saved.record.filePath,
+				text: saved.text, importedAt: saved.record.importedAt, auditOnly,
+			});
+		} finally { inFlight.delete(sourceId); }
+	}
+	return { runExtraction, importNotes, resumeNotes };
 }
 
