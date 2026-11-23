@@ -16,6 +16,7 @@ import { stores } from "./stores.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { existingNodeAuditStore } from "../store/existing-node-audit.ts";
 import { getGraph } from "../core/graph.ts";
+import { acceptedTypedRelations } from "../core/typed-relations.ts";
 
 const relations = [
   "equivalent", "a_specializes_b", "b_specializes_a",
@@ -52,13 +53,15 @@ export function existingNodeAuditStatus(): boolean { return active; }
 
 export function existingNodeAuditView() {
   const nodes = getGraph(stores.graphStore).nodes.filter(n => n.id.startsWith("n_"));
-  const view = currentExistingNodeAudit(nodes, existingNodeAuditStore.read());
+  const record = existingNodeAuditStore.read();
+  const view = currentExistingNodeAudit(nodes, record);
   return {
     running: active,
     totalNodes: nodes.length,
     candidateCount: view.candidates.length,
     remaining: view.remaining.length,
     items: view.items.sort((a, b) => b.auditedAt.localeCompare(a.auditedAt)),
+    typedRelations: acceptedTypedRelations(nodes, record),
     // Provide titles for compact UI, no raw source text or provider secrets.
     names: Object.fromEntries(nodes.map(node => [node.id, node.name])),
   };
