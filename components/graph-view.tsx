@@ -935,7 +935,7 @@ export function GraphChromeRow({
 				</div>
 			{/* Import notes — its own container (36px, header band); ALWAYS
 			    rendered (the empty-graph ruling above — the entry point). */}
-			{!isEmpty && <ExistingNodeAuditControl />}
+			{!isEmpty && <ExistingNodeAuditControl onRelationsChanged={() => window.dispatchEvent(new CustomEvent("lh:graph-revision"))} />}
 			<NotesImportControl importing={importing} onImportFiles={onImportFiles} />
 			{!isEmpty && (
 				// Rendering settings — own component; the gear toggles it. The
@@ -1486,6 +1486,7 @@ export function GraphView({
 			})),
 			edges: snapshot.edges.map((e) => ({ from: e.from, to: e.to })),
 			logicalEdges: snapshot.logicalEdges.map((e) => ({ from: e.from, to: e.to })),
+			typedRelations: snapshot.typedRelations ?? [],
 			impLinks: snapshot.impLinks,
 			clusters: snapshot.clusters.map((c) => ({ id: c.id, label: c.label, members: c.members })),
 			colors: {

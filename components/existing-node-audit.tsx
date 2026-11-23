@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ScanSearchIcon, Loader2Icon } from "lucide-react";
 import { Hint } from "@/components/ui/hint";
+import type { TypedGraphRelation } from "@/src/core/typed-relations.ts";
 
 type Relation = "equivalent" | "a_specializes_b" | "b_specializes_a" |
   "a_implies_b" | "b_implies_a" | "related" | "unrelated" | "uncertain";
@@ -13,6 +14,7 @@ interface Item {
 interface View {
   running: boolean; totalNodes: number; candidateCount: number;
   remaining: number; items: Item[]; names: Record<string, string>;
+  typedRelations?: TypedGraphRelation[];
 }
 const relationship: Record<Relation, string> = {
   equivalent: "Possible duplicate / equivalent",
@@ -24,7 +26,7 @@ const relationship: Record<Relation, string> = {
   unrelated: "No evident relation",
   uncertain: "Uncertain: review assumptions",
 };
-export function ExistingNodeAuditControl() {
+export function ExistingNodeAuditControl({ onRelationsChanged }: { onRelationsChanged?: () => void } = {}) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>();
   const [busy, setBusy] = useState(false);
@@ -48,6 +50,7 @@ export function ExistingNodeAuditControl() {
       const data = await response.json() as View & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "Audit failed.");
       setView(data);
+      if (value.action === "review") onRelationsChanged?.();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }
@@ -69,10 +72,10 @@ export function ExistingNodeAuditControl() {
       <p className="mb-2 text-xs text-muted-foreground">
         Scans existing propositions for potential equivalents, special cases and implications.
         Only promising text-based candidates are checked. Results are AI suggestions, not formal proofs.
-        No graph nodes are changed or merged.
+        Approved directional relations are drawn in the graph; proposition nodes and proof chains remain unchanged.
       </p>
       {view && <p className="mb-2 text-xs text-muted-foreground">
-        {view.totalNodes} nodes · {view.candidateCount} candidate pairs · {view.remaining} not yet audited
+        {view.totalNodes} nodes · {view.candidateCount} candidate pairs · {view.remaining} not yet audited · {view.typedRelations?.length ?? 0} approved typed connections
       </p>}
       <button type="button" disabled={busy || view?.remaining === 0}
         onClick={() => void action({ action: "scan", batchSize: 12 })}
@@ -94,6 +97,8 @@ export function ExistingNodeAuditControl() {
           <div className="break-words">A: {view?.names[item.a] ?? item.a}</div>
           <div className="break-words">B: {view?.names[item.b] ?? item.b}</div>
           <p className="my-2 whitespace-pre-wrap text-muted-foreground">{item.explanation}</p>
+          {item.status === "accepted" && ["a_specializes_b", "b_specializes_a", "a_implies_b", "b_implies_a"].includes(item.relation) &&
+            <p className="my-1 font-medium">Connected in graph · {item.relation.includes("specializes") ? "dashed specialization arrow" : "dotted implication arrow"}</p>}
           {item.status === "suggested" ? <div className="flex gap-2">
             <button type="button" disabled={busy} onClick={() => void action({
               action: "review", key: item.key, status: "accepted",
@@ -101,7 +106,7 @@ export function ExistingNodeAuditControl() {
             <button type="button" disabled={busy} onClick={() => void action({
               action: "review", key: item.key, status: "dismissed",
             })} className="rounded border px-2 py-1 hover:bg-accent">Dismiss</button>
-          </div> : <p className="text-muted-foreground">Reviewed: {item.status}</p>}
+          </div> : <div className="flex items-center gap-2"><p className="text-muted-foreground">Reviewed: {item.status}</p>{item.status === "accepted" && <button type="button" disabled={busy} onClick={() => void action({ action: "review", key: item.key, status: "dismissed" })} className="rounded border px-2 py-1 hover:bg-accent">Remove approval</button>}</div>}
         </div>)}
         {view && interesting.length === 0 && <p className="text-xs text-muted-foreground">
           No relationships to review yet. Use the audit button to inspect candidate pairs.

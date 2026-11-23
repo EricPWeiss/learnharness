@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
 import { LEDGER_FILES, POSITIONS_FILE } from "../../config.ts";
+import { acceptedTypedRelations } from "../core/typed-relations.ts";
+import { existingNodeAuditStore, AUDIT_FILE } from "../store/existing-node-audit.ts";
 import type { GraphSnapshot } from "../core/contracts.ts";
 import type { GraphCostSummary } from "../core/cost-summary.ts";
 import { graphCostSummary } from "../core/cost-summary.ts";
@@ -22,7 +24,8 @@ import { callCost } from "./pricing.ts";
 export function graphView(): GraphSnapshot {
 	const organization = stores.sourceOrganizationStore.read();
 	const names = Object.fromEntries(Object.entries(organization.placements).flatMap(([id, p]) => p.name === undefined ? [] : [[id, p.name]]));
-	return { ...graphSnapshot(stores, names), sourceOrganization: organization };
+	const snapshot = graphSnapshot(stores, names);
+	return { ...snapshot, typedRelations: acceptedTypedRelations(snapshot.propositions, existingNodeAuditStore.read()), sourceOrganization: organization };
 }
 
 /** The graph view's cost surface (GET /api/graph/costs — the 2026-09 cost
@@ -62,6 +65,7 @@ export function graphRevision(): number {
 		LEDGER_FILES.sessions,
 		LEDGER_FILES.coverage,
 		POSITIONS_FILE,
+		AUDIT_FILE,
 	]) {
 		try {
 			revision = Math.max(revision, fs.statSync(file).mtimeMs);

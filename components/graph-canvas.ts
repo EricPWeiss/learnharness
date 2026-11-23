@@ -56,6 +56,7 @@ import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zo
 import type { Simulation, SimulationLinkDatum } from "d3-force";
 import { clusterHue, type Pt } from "./cluster-geometry.ts";
 import type { RenderedMode } from "@/src/core";
+import type { TypedGraphRelation } from "@/src/core/typed-relations.ts";
 import {
 	CHARGE_STRENGTH,
 	CLUSTER_PULL_STRENGTH,
@@ -143,6 +144,8 @@ export interface CanvasData {
 	 *  drawn edges (legacy). Optional so non-graph callers of the
 	 *  renderer stay simple. */
 	logicalEdges?: CanvasEdge[];
+	/** Approved classifications, drawn separately and never proof chains. */
+	typedRelations?: ReadonlyArray<TypedGraphRelation>;
 	/** The imp chain linkage — the depth pass anchors each junction at
 	 *  the premises/conclusion midpoint (owner, 2026-09-30). */
 	impLinks?: ReadonlyArray<{ id: string; premises: ReadonlyArray<string>; conclusion: string }>;
@@ -1695,6 +1698,39 @@ export class GraphCanvasRenderer {
 			ctx.lineCap = "round";
 			ctx.stroke(this.shaftsPath);
 			ctx.fill(this.headsPath);
+		}
+
+		// Approved semantic relationships are a separate visual layer, not
+		// extractor proof arrows. Dashes mean specialization (specific → general);
+		// dots mean a reviewed one-way implication. Neither is a proof chain.
+		// Draw behind node discs so endpoints remain readable.
+		if (data.typedRelations?.length && settings.edgeWidth > 0) {
+			ctx.save();
+			ctx.strokeStyle = data.colors.label;
+			ctx.fillStyle = data.colors.label;
+			ctx.globalAlpha = 0.78;
+			ctx.lineWidth = Math.max(1.2, settings.edgeWidth * 1.2) / k;
+			for (const rel of data.typedRelations) {
+				if (this.visible && (!this.visible.has(rel.from) || !this.visible.has(rel.to))) continue;
+				const from = this.nodeById.get(rel.from);
+				const to = this.nodeById.get(rel.to);
+				if (!from || !to) continue;
+				const geom = arrowGeometry(from, to, nodeR, nodeR, settings.arrowLength);
+				if (!geom) continue;
+				ctx.setLineDash(rel.kind === "specializes" ? [7 / k, 4 / k] : [2 / k, 4 / k]);
+				ctx.beginPath();
+				ctx.moveTo(geom.shaftFrom.x, geom.shaftFrom.y);
+				ctx.lineTo(geom.shaftTo.x, geom.shaftTo.y);
+				ctx.stroke();
+				ctx.setLineDash([]);
+				ctx.beginPath();
+				ctx.moveTo(geom.tip.x, geom.tip.y);
+				ctx.lineTo(geom.left.x, geom.left.y);
+				ctx.lineTo(geom.right.x, geom.right.y);
+				ctx.closePath();
+				ctx.fill();
+			}
+			ctx.restore();
 		}
 
 		// 4. Nodes: one cached Path2D, one fill.

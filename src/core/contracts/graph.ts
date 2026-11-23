@@ -20,6 +20,7 @@
 
 import type { CallUsage, ExtractionRunUsage } from "./chat.ts";
 import type { SourceOrganization } from "../source-organization.ts";
+import type { TypedGraphRelation } from "../typed-relations.ts";
 
 /** Directed relation derived from stored reasoning chains, not an independent
  * ledger record. Canvas edges connect a single premise directly to its
@@ -298,6 +299,8 @@ export interface GraphSnapshot {
 	/** Derived direct premise → conclusion arrows over proposition IDs only.
 	 * Depth calculations use these rather than implication-node geometry. */
 	logicalEdges: GraphEdge[];
+	/** User-approved typed links, distinct from extractor proof chains. */
+	typedRelations?: TypedGraphRelation[];
 	/** Derived junction linkage for each live multi-premise chain. Layout uses
 	 * premise/conclusion rows to position its implication node between them. */
 	impLinks: Array<{ id: string; premises: string[]; conclusion: string }>;
