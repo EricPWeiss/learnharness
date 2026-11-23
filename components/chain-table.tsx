@@ -763,6 +763,7 @@ export function ChainTableOverlay({
 					requestVersion.current++;
 					setDirectory(body as SourceDirectory); setDirectoryPending(false); setDirectoryFailure("");
 				}
+				window.dispatchEvent(new CustomEvent("lh:source-organization-changed", { detail: (body as SourceDirectory).organization }));
 				if (action.action === "rename-source") {
 					const entry = (body as SourceDirectory).sources.find((s) => s.id === action.id);
 					window.dispatchEvent(new CustomEvent(entry?.kind === "chat" ? "lh:chat-renamed" : "lh:source-renamed", { detail: { id: action.id, title: action.name } }));

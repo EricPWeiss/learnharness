@@ -65,6 +65,7 @@
 
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportControl, NotesImportErrors, NotesImportNotices, useNotesImport } from "@/components/notes-import.tsx";
+import { ExistingNodeAuditControl } from "@/components/existing-node-audit.tsx";
 import { PluginGraphActions } from "@/components/plugin-chrome";
 import { SettingsSlider as SettingSlider } from "@/components/settings/controls";
 import Link from "next/link";
@@ -72,6 +73,9 @@ import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, Wayp
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { CLUSTER_LIGHTNESS, GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
+import { computeInteractiveClusters } from "@/src/core/interactive-clusters.ts";
+import type { SourceOrganization } from "@/src/core/source-organization.ts";
+import { sourceFolderBreadcrumb } from "@/src/core/source-folder-breadcrumb.ts";
 import { useAppearance } from "@/components/settings/appearance";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
@@ -416,11 +420,17 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 function GraphSettingsControl({
 	settings,
 	changeSettings,
+	clusters,
+	onRenameCluster,
 }: {
 	settings: GraphRenderSettings;
 	changeSettings: (update: (cur: RenderSettings) => RenderSettings) => void;
+	clusters: GraphSnapshot["clusters"];
+	onRenameCluster: (id: string, label: string, members: string[]) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [chosenCluster, setChosenCluster] = useState("");
+	const currentCluster = clusters.find(c => c.id === chosenCluster) ?? clusters[0];
 	// Click anywhere outside (or Escape) closes the panel (2026-09-17) —
 	// the root wraps button + panel, so the toggle itself keeps working.
 	const rootRef = useRef<HTMLDivElement>(null);
@@ -460,7 +470,52 @@ function GraphSettingsControl({
 				// distance from the panel's right border.
 				<div ref={panelRef} style={{ zIndex: INTERACTION_LAYER_Z_BASE + popupLayer.order }} className="absolute right-0 top-full mt-2 flex max-h-[60vh] w-72 flex-col rounded-xl border bg-card/85 p-2.5 shadow-lg backdrop-blur">
 					<div className="flex flex-col gap-2 overflow-y-auto pr-2.5">
-							{/* Size/zoom/region sliders: LADDER-mapped 0-100, step 10 (11
+						<div className="mb-2 flex flex-col gap-2 border-b pb-3">
+							<span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Interactive clustering</span>
+							<select aria-label="Clustering mode" className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
+								value={settings.clustering.mode}
+								onChange={e => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: e.target.value as GraphRenderSettings["clustering"]["mode"] } }))}>
+								<option value="source">Source (individual PDFs)</option>
+								<option value="folder">Folder (existing folders)</option>
+								<option value="logical">Logical (reasoning chains)</option>
+								<option value="hybrid">Source Hybrid (PDF + logic)</option>
+								<option value="folder-hybrid">Folder Hybrid (folders + logic)</option>
+							</select>
+							{settings.clustering.mode === "folder" && <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+								Folder grouping level
+								<select aria-label="Folder grouping level" className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
+									value={settings.clustering.folderLevel}
+									onChange={e => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, folderLevel: e.target.value as GraphRenderSettings["clustering"]["folderLevel"] } }))}>
+									<option value="direct">Direct folder (subfolders separately)</option>
+									<option value="top">Top-level folder (include descendants)</option>
+								</select>
+							</label>}
+							<SettingSlider label="Logical weight" min={0} max={100} step={5}
+								value={settings.clustering.logicalWeight} display={settings.clustering.logicalWeight + "%"}
+								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, logicalWeight: p } }))} />
+							<SettingSlider label="Clustering granularity" min={0} max={100} step={5}
+								value={settings.clustering.granularity} display={settings.clustering.granularity + "%"}
+								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, granularity: p } }))} />
+							<SettingSlider label="Bridge influence" min={0} max={100} step={5}
+								value={settings.clustering.bridgeInfluence} display={settings.clustering.bridgeInfluence + "%"}
+								onChange={p => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, bridgeInfluence: p } }))} />
+							<p className="text-[10px] text-muted-foreground">{clusters.length} visible communities. {settings.clustering.mode === "folder" ? "Folder names follow the existing Chains source tree; weights do not alter folder membership. Unfiled sources stay separate." : settings.clustering.mode === "folder-hybrid" ? "Folder Hybrid weights both parent and subfolder memberships, plus reasoning chains. Cross-folder chains get bridge influence; unfiled sources have no folder prior." : "Bridge weight currently uses cross-source chains as a proxy."}</p>
+							<button type="button" className="self-start rounded border px-2 py-1 text-[11px] hover:bg-accent"
+								onClick={() => changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, mode: "hybrid", logicalWeight: 50, granularity: 50, bridgeInfluence: 60 } }))}>
+								Reset clustering
+							</button>
+							<span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Rename a community</span>
+							<select aria-label="Choose community" value={currentCluster?.id ?? ""}
+								onChange={e => setChosenCluster(e.target.value)} className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs">
+								{clusters.map(c => <option key={c.id} value={c.id}>{c.label ?? c.id} ({c.members.filter(id => id.startsWith("n_")).length})</option>)}
+							</select>
+							{currentCluster && <input key={currentCluster.id + ":" + (currentCluster.label ?? "")} aria-label="Custom community name"
+								defaultValue={currentCluster.label ?? ""} placeholder="Community name" maxLength={100}
+								className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs"
+								onBlur={e => { const name = e.target.value.trim(); if (name && name !== currentCluster.label) onRenameCluster(currentCluster.id, name, currentCluster.members); }}
+								onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }} />}
+						</div>
+						{/* Size/zoom/region sliders: LADDER-mapped 0-100, step 10 (11
 							    stops, every DEFAULT dead-center at 50, every value a nice
 							    number — src/core/render-settings.ts). Physics keeps the
 							    fine-grained log sliders (step 5). */}
@@ -814,6 +869,8 @@ export function GraphChromeRow({
 	onImportFiles,
 	settings,
 	changeSettings,
+	clusters = [],
+	onRenameCluster = () => {},
 	onOpenChains,
 }: {
 	isEmpty: boolean;
@@ -827,6 +884,8 @@ export function GraphChromeRow({
 	onImportFiles: (files: FileList | null) => void;
 	settings: GraphRenderSettings;
 	changeSettings: (update: (cur: RenderSettings) => RenderSettings) => void;
+	clusters?: GraphSnapshot["clusters"];
+	onRenameCluster?: (id: string, label: string, members: string[]) => void;
 	/** Opens the chain table overlay (the chains-overlay plan,
 	 *  2026-09-29). */
 	onOpenChains: () => void;
@@ -876,6 +935,7 @@ export function GraphChromeRow({
 				</div>
 			{/* Import notes — its own container (36px, header band); ALWAYS
 			    rendered (the empty-graph ruling above — the entry point). */}
+			{!isEmpty && <ExistingNodeAuditControl onRelationsChanged={() => window.dispatchEvent(new CustomEvent("lh:graph-revision"))} />}
 			<NotesImportControl importing={importing} onImportFiles={onImportFiles} />
 			{!isEmpty && (
 				// Rendering settings — own component; the gear toggles it. The
@@ -884,7 +944,7 @@ export function GraphChromeRow({
 				// is a plain shrink-0 flex child — the panel itself positions
 				// within GraphSettingsControl's own relative root, unaffected.
 				<div className="graph-chrome-fade-in shrink-0">
-					<GraphSettingsControl settings={settings} changeSettings={changeSettings} />
+					<GraphSettingsControl settings={settings} changeSettings={changeSettings} clusters={clusters} onRenameCluster={onRenameCluster} />
 				</div>
 			)}
 		</>
@@ -967,7 +1027,9 @@ export function GraphView({
 	const cardRef = useRef<HTMLDivElement | null>(null);
 	const { resolvedMode, colors } = useAppearance();
 	const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
+	const [organization, setOrganization] = useState<SourceOrganization | undefined>();
 	const [selected, setSelected] = useState<Selection | null>(null);
+	const [hovered, setHovered] = useState<{ nodeId: string; pos: { x: number; y: number } } | null>(null);
 	// The latest snapshot for the renderer's click callbacks (they are
 	// constructed once, so they read through this ref, never a closure).
 	const snapshotRef = useRef<GraphSnapshot | null>(null);
@@ -987,6 +1049,7 @@ export function GraphView({
 	// below (same names the old session state had).
 	const regionTuning = settings.regions;
 	const physicsTuning = settings.physics;
+	const activeClusters = useMemo(() => snapshot ? computeInteractiveClusters(snapshot.propositions, snapshot.chains, snapshot.clusters, settings.clustering, organization ?? snapshot.sourceOrganization) : [], [snapshot, settings.clustering, organization]);
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
 	// True once the user has moved a control this mount: the server copy
@@ -1077,7 +1140,7 @@ export function GraphView({
 		fetch("/api/graph")
 			.then((res) => res.json() as Promise<GraphSnapshot>)
 			.then((data) => {
-				if (!cancelled) setSnapshot(data);
+				if (!cancelled) { setSnapshot(data); setOrganization(data.sourceOrganization); }
 			})
 			.catch((err) => console.error("[graph] fetch failed:", err));
 		return () => {
@@ -1208,6 +1271,14 @@ export function GraphView({
 	   (applyClusterLabels): a rename can't reach a gone record. */
 	const [, setLabelTick] = useState(0);
 	useEffect(() => {
+		const onOrganizationChanged = (event: Event) => {
+			const next = (event as CustomEvent<SourceOrganization>).detail;
+			if (next?.version === 1 && Array.isArray(next.folders)) setOrganization(next);
+		};
+		window.addEventListener("lh:source-organization-changed", onOrganizationChanged);
+		return () => window.removeEventListener("lh:source-organization-changed", onOrganizationChanged);
+	}, []);
+	useEffect(() => {
 		const onRenamed = (e: Event) => {
 			const { id, title } = (e as CustomEvent<{ id?: string; title?: string }>).detail ?? {};
 			if (typeof id !== "string" || typeof title !== "string" || id === "" || title === "") return;
@@ -1331,6 +1402,7 @@ export function GraphView({
 		const renderer = new GraphCanvasRenderer(
 			canvas,
 			{
+				onHover: (nodeId, pos) => setHovered(nodeId === null ? null : { nodeId, pos }),
 				onSelect: (nodeId, pos) => {
 					const snap = snapshotRef.current;
 					const node = snap?.nodes.find((n) => n.id === nodeId);
@@ -1360,6 +1432,7 @@ export function GraphView({
 				// context menu closes with it: a menu floating over a moved
 				// graph is anchored to nothing.
 				onCameraMove: (t) => {
+					setHovered(null);
 					setSelected(null);
 					setCtxNode(null);
 					persistCamera(t);
@@ -1413,6 +1486,7 @@ export function GraphView({
 			})),
 			edges: snapshot.edges.map((e) => ({ from: e.from, to: e.to })),
 			logicalEdges: snapshot.logicalEdges.map((e) => ({ from: e.from, to: e.to })),
+			typedRelations: snapshot.typedRelations ?? [],
 			impLinks: snapshot.impLinks,
 			clusters: snapshot.clusters.map((c) => ({ id: c.id, label: c.label, members: c.members })),
 			colors: {
@@ -1426,6 +1500,11 @@ export function GraphView({
 			fontFamily: getComputedStyle(document.body).fontFamily,
 		});
 	}, [snapshot, isEmpty, resolvedMode, colors]);
+
+	// Community-only update: keep the same camera and live node positions.
+	useEffect(() => {
+		if (!isEmpty) rendererRef.current?.setClusters(activeClusters.map(c => ({ id: c.id, label: c.label, members: c.members })));
+	}, [activeClusters, isEmpty]);
 
 	// Feed #2 — settings: just marks the frame dirty. No rebuild, no
 	// re-layout, no camera touch (the whole point of the new renderer).
@@ -1486,6 +1565,24 @@ export function GraphView({
 					{/* THE single canvas: every layer (hulls, edges, nodes, both
 					    label systems, hover) draws into it, once per frame. */}
 					<canvas ref={canvasRef} className="block h-full w-full touch-none" />
+					{/* Pointer-transparent hover tooltip for provenance and current folder paths. */}
+					{hovered && !selected && snapshot && (() => {
+						const node = snapshot.propositions.find(n => n.id === hovered.nodeId);
+						const ids = snapshot.nodeSessions[hovered.nodeId] ?? [];
+						if (!node || ids.length === 0) return null;
+						const org = organization ?? snapshot.sourceOrganization;
+						return <div role="tooltip" className="pointer-events-none absolute z-20 w-64 max-w-[calc(100%-1rem)] rounded-lg border bg-card/95 p-2.5 text-xs shadow-lg backdrop-blur"
+							style={{
+								left: Math.max(8, Math.min(hovered.pos.x + 14, (containerRef.current?.clientWidth ?? 600) - 270)),
+								top: Math.max(8, Math.min(hovered.pos.y + 14, (containerRef.current?.clientHeight ?? 400) - 130)),
+							}}>
+							<div className="mb-1 font-medium">{node.name}</div>
+							{ids.map(id => <div key={id} className="mt-1 min-w-0">
+								<div className="truncate text-muted-foreground">{snapshot.sessions[id] ?? snapshot.fileSources[id] ?? id}</div>
+								<div className="break-words text-foreground">{sourceFolderBreadcrumb(org, id) ?? "Unfiled"}</div>
+							</div>)}
+						</div>;
+					})()}
 					{/* The context menu's anchor: a zero-size point at the
 					    right-click position (canvas-relative == container-relative,
 					    the canvas fills this div). */}
@@ -1591,6 +1688,23 @@ export function GraphView({
 					onImportFiles={onImportFiles}
 					settings={settings}
 					changeSettings={changeSettings}
+					clusters={activeClusters}
+					onRenameCluster={(id, label, members) => {
+						if (settings.clustering.mode === "folder" && id.startsWith("folder:")) {
+							// Rename the real source folder rather than a local visual alias.
+							void fetch("/api/graph/sources", {
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ action: "rename-folder", id: id.slice("folder:".length), name: label }),
+							}).then(async response => {
+								const body = await response.json();
+								if (!response.ok) throw new Error(body.error ?? "Could not rename folder");
+								window.dispatchEvent(new CustomEvent("lh:source-organization-changed", { detail: body.organization }));
+							}).catch(error => window.alert("Could not rename folder: " + (error instanceof Error ? error.message : String(error))));
+							return;
+						}
+						changeSettings(cur => ({ ...cur, clustering: { ...cur.clustering, names: { ...cur.clustering.names, [cur.clustering.mode + ":" + id]: { label, members: members.filter(x => x.startsWith("n_")) } } } }));
+					}}
 					onOpenChains={() => setChainsOpen(true)}
 				/>
 			</div>

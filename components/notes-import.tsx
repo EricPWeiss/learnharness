@@ -64,6 +64,80 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 	return parseNotesImportResults(body, files);
 }
 
+/** Local recovery summary; never send source text to the browser. */
+interface ImportRecoveryRow {
+  sourceId: string;
+  filePath: string;
+  total: number;
+  merged: number;
+  extracted: number;
+  failed: number;
+  needsReview: boolean;
+  completed: boolean;
+  lastError?: string;
+}
+
+/** Explicit recovery actions operate on saved normalized content, not the
+ * original browser File. Only the failed/unmerged work is retried. */
+export function ImportRecoveryPanel({ onClose }: { onClose: () => void }) {
+  const [rows, setRows] = useState<ImportRecoveryRow[]>([]);
+  const [pending, setPending] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/graph/import/recovery", { cache: "no-store" });
+      const data = await r.json() as { imports?: ImportRecoveryRow[]; error?: string };
+      if (!r.ok || !Array.isArray(data.imports)) throw new Error(data.error ?? "Could not read import progress.");
+      setRows(data.imports);
+      setError("");
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void refresh(); }, []);
+  const recover = async (sourceId: string, action: "resume" | "reaudit") => {
+    setPending(sourceId);
+    setError("");
+    try {
+      const r = await fetch("/api/graph/import/recovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceId, action }),
+      });
+      const data = await r.json() as { error?: string };
+      if (!r.ok) throw new Error(data.error ?? "Recovery failed.");
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setPending(""); }
+  };
+  return (
+    <div role="dialog" aria-label="Recover PDF imports" className="absolute right-0 top-full mt-1 max-h-[65vh] w-80 overflow-y-auto rounded-lg border bg-card p-3 text-xs shadow-xl">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <strong>Saved import progress</strong>
+        <button type="button" onClick={onClose} aria-label="Close import recovery" className="rounded px-2 py-1 hover:bg-accent">Close</button>
+      </div>
+      <p className="mb-2 text-muted-foreground">Resume missing chunks without uploading again. Saved findings are checked against the current graph before merging. Completed chunks are never replayed.</p>
+      {error && <p role="alert" className="mb-2 text-error">{error}</p>}
+      {loading && <p>Loading saved imports…</p>}
+      {!loading && rows.length === 0 && <p>No saved imports yet. Older imports made before this feature cannot be resumed.</p>}
+      <div className="flex flex-col gap-2">
+        {rows.map(row => <div key={row.sourceId} className="rounded-md border p-2">
+          <div className="break-all font-medium">{row.filePath}</div>
+          <p className="text-muted-foreground">{row.merged}/{row.total} chunks merged; {row.extracted} extracted; {row.failed} errors</p>
+          {row.lastError && <p className="break-words text-error">{row.lastError}</p>}
+          {row.needsReview ? <p className="text-muted-foreground">Merge outcome uncertain. Inspect the graph; automatic replay is blocked.</p> :
+          !row.completed && <div className="mt-1 flex gap-2">
+            <button type="button" disabled={Boolean(pending)} onClick={() => void recover(row.sourceId, "resume")} className="rounded border px-2 py-1 hover:bg-accent disabled:opacity-50">Resume</button>
+            {row.extracted > 0 && <button type="button" disabled={Boolean(pending)} onClick={() => void recover(row.sourceId, "reaudit")} className="rounded border px-2 py-1 hover:bg-accent disabled:opacity-50">Re-audit and merge</button>}
+          </div>}
+          {row.completed && <p className="text-muted-foreground">Completed</p>}
+        </div>)}
+      </div>
+    </div>
+  );
+}
+
 // Client module singleton: shared by both home views and successive selections.
 // SSR never appends Files, and uses the immutable empty server snapshot.
 const pageImportQueue = createNotesImportQueue(postNotesImport);
@@ -94,6 +168,7 @@ export function NotesImportControl({ importing, onImportFiles }: { importing: bo
 	const filesRef = useRef<HTMLInputElement>(null);
 	const folderRef = useRef<HTMLInputElement>(null);
 	const [open, setOpen] = useState(false);
+	const [recovery, setRecovery] = useState(false);
 	const hintId = useId();
 	const onChange = (event: ChangeEvent<HTMLInputElement>) => {
 		onImportFiles(event.target.files);
@@ -116,11 +191,14 @@ export function NotesImportControl({ importing, onImportFiles }: { importing: bo
 					<WaypointsIcon className="size-3" />{importing ? "Extracting…" : "Extract files…"}
 				</button>
 			</Hint>
+			{recovery && <ImportRecoveryPanel onClose={() => setRecovery(false)} />}
 			{open && (
 				<div ref={panelRef} role="menu" aria-label="Extract files into the graph" aria-describedby={hintId} style={{ zIndex: INTERACTION_LAYER_Z_BASE + popupLayer.order }} className="absolute right-0 top-full mt-1 w-52 rounded-lg border bg-card p-1 shadow-lg">
 					<div role="none"><p id={hintId} className="px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">For lessons, attach material to a session instead.</p></div>
 					{choices.map(([label, input]) => <button key={label} type="button" role="menuitem" className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-accent"
 						onClick={() => { setOpen(false); input.current?.click(); }}>{label}</button>)}
+					<button type="button" role="menuitem" className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-accent"
+						onClick={() => { setOpen(false); setRecovery(true); }}>Recover imports…</button>
 				</div>
 			)}
 		</div>

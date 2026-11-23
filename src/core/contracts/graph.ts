@@ -19,6 +19,8 @@
 // ─── Knowledge graph (vision §1 — global, cross-session) ────────────────────
 
 import type { CallUsage, ExtractionRunUsage } from "./chat.ts";
+import type { SourceOrganization } from "../source-organization.ts";
+import type { TypedGraphRelation } from "../typed-relations.ts";
 
 /** Directed relation derived from stored reasoning chains, not an independent
  * ledger record. Canvas edges connect a single premise directly to its
@@ -297,6 +299,8 @@ export interface GraphSnapshot {
 	/** Derived direct premise → conclusion arrows over proposition IDs only.
 	 * Depth calculations use these rather than implication-node geometry. */
 	logicalEdges: GraphEdge[];
+	/** User-approved typed links, distinct from extractor proof chains. */
+	typedRelations?: TypedGraphRelation[];
 	/** Derived junction linkage for each live multi-premise chain. Layout uses
 	 * premise/conclusion rows to position its implication node between them. */
 	impLinks: Array<{ id: string; premises: string[]; conclusion: string }>;
@@ -310,6 +314,8 @@ export interface GraphSnapshot {
 	 *  graph (the format-agnostic front door): a static provenance entry —
 	 *  the detail card shows the path as plain text, not a link. */
 	fileSources: Record<string, string>;
+	/** Folder organization for optional folder-grouped graph regions. */
+	sourceOrganization?: SourceOrganization;
 	/** nodeId → chatIds that touched the node (click-through provenance). */
 	nodeSessions: Record<string, string[]>;
 	/** Birth-session communities (core/session-clusters.ts: each

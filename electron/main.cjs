@@ -536,6 +536,11 @@ function installUpdateNow() {
 }
 
 function setupAutoUpdater() {
+	// Custom interactive-clustering build: never fetch the official release feed.
+	// The app ID and data path intentionally stay identical for in-place install.
+	log("auto-update: disabled for custom interactive-clustering build");
+	reportUpdateStatus("disabled");
+	return;
 	if (!app.isPackaged) {
 		log("auto-update: dev build — updater disabled");
 		reportUpdateStatus("disabled");
